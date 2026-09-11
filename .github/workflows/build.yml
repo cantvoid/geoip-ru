@@ -1,0 +1,77 @@
+name: Build and Release Geoip
+
+on:
+  schedule:
+    - cron: '0 0 * * 0'
+  workflow_dispatch:
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+
+      - name: Download Files
+        run: |
+          curl -L -o base-geoip.dat https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release/geoip.dat
+          curl -L -o ru-whitelist-cidr.txt https://raw.githubusercontent.com/hxehex/russia-mobile-internet-whitelist/refs/heads/main/cidrwhitelist.txt
+          curl -L -o ru-whitelist-domains.txt https://raw.githubusercontent.com/hxehex/russia-mobile-internet-whitelist/refs/heads/main/whitelist.txt
+
+      - name: Build geoip.dat
+        run: |
+          git clone https://github.com/v2fly/geoip.git
+          cd geoip
+          cat << 'EOF' > config.json
+          {
+            "input": [
+              { "type": "v2rayGeoIPDat", "action": "add", "args": { "uri": "../base-geoip.dat" } },
+              { "type": "text", "action": "add", "args": { "name": "ru-whitelist", "uri": "../ru-whitelist-cidr.txt" } }
+            ],
+            "output": [
+              { "type": "v2rayGeoIPDat", "action": "output", "args": { "outputDir": "../", "outputName": "geoip.dat" } }
+            ]
+          }
+          EOF
+          go run ./
+          cd ..
+
+      - name: Build geosite.dat
+        run: |
+          git clone https://github.com/v2fly/domain-list-community.git
+          cd domain-list-community
+          cp ../ru-whitelist-domains.txt data/ru-whitelist
+          go run ./
+          cd ..
+          mv domain-list-community/dlc.dat ./geosite.dat
+
+      - name: Commit to main
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add geoip.dat geosite.dat
+          git commit -m "chore: update geoip and geosite" || echo "No changes"
+          git push
+
+      - name: Generate Release Tag
+        id: vars
+        run: echo "tag_name=v$(date +'%Y%m%d')" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.vars.outputs.tag_name }}
+          name: ${{ steps.vars.outputs.tag_name }}
+          files: |
+            geoip.dat
+            geosite.dat
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
